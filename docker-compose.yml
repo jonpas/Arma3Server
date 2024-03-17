@@ -2,7 +2,8 @@ version: '3.8'
 services:
   arma3:
     build: .
-    image: ghcr.io/brettmayson/arma3server/arma3server:latest
+    #image: ghcr.io/brettmayson/arma3server/arma3server:latest
+    image: jonpas/arma3server-java
     platform: linux/amd64
     container_name: arma3
     network_mode: host
