@@ -29,6 +29,7 @@ RUN apt-get update \
         libssl3 \
         libc6 \
         git \
+        libavahi-client3 \
         temurin-8-jre \
     && \
     apt-get remove --purge -y \
@@ -39,7 +40,7 @@ RUN apt-get update \
     && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install -U zstandard "git+https://github.com/brettmayson/valvepythonsteam#egg=steam[client]"
+RUN pip3 install -U zstandard "git+https://github.com/brettmayson/valvepythonsteam#egg=steam[client]" --break-system-packages
 
 ENV PYTHONUNBUFFERED=1
 
