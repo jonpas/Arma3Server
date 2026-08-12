@@ -28,7 +28,10 @@ pub enum SteamAuth {
 }
 
 pub struct Config {
-    pub steam_auth: SteamAuth,
+    /// `None` when nothing in this run needs Steam at all -- see
+    /// `from_env`. Every Steam-touching step is skipped in that case.
+    pub steam_auth: Option<SteamAuth>,
+    pub skip_install: bool,
     pub arma_binary: String,
     pub arma_cdlc: Vec<String>,
     pub mods_preset: Option<String>,
@@ -37,18 +40,32 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let anonymous_login = bool_env("ANONYMOUS_LOGIN", false);
-        let steam_auth = if anonymous_login {
-            SteamAuth::Anonymous
+        let skip_install = bool_env("SKIP_INSTALL", false);
+        let mods_preset = env::var("MODS_PRESET").ok().filter(|s| !s.is_empty());
+
+        // Ported from v2's launch.py, which only ever logged in from
+        // inside the `if not SKIP_INSTALL` block or lazily for a mod
+        // preset -- so SKIP_INSTALL=true with no preset ran with no Steam
+        // session and no credentials at all. Requiring STEAM_USER/
+        // STEAM_PASSWORD here (as this did unconditionally before) would
+        // regress that: the whole point of SKIP_INSTALL is launching
+        // content that's already on disk, which needs neither.
+        let needs_steam = !skip_install || mods_preset.is_some();
+
+        let steam_auth = if !needs_steam {
+            None
+        } else if bool_env("ANONYMOUS_LOGIN", false) {
+            Some(SteamAuth::Anonymous)
         } else {
-            SteamAuth::Credentials {
+            Some(SteamAuth::Credentials {
                 user: require_env("STEAM_USER")?,
                 password: require_env("STEAM_PASSWORD")?,
-            }
+            })
         };
 
         Ok(Self {
             steam_auth,
+            skip_install,
             arma_binary: env::var("ARMA_BINARY").unwrap_or_else(|_| "./arma3server_x64".into()),
             arma_cdlc: env::var("ARMA_CDLC")
                 .unwrap_or_default()
@@ -56,7 +73,7 @@ impl Config {
                 .map(|s| s.trim().to_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect(),
-            mods_preset: env::var("MODS_PRESET").ok().filter(|s| !s.is_empty()),
+            mods_preset,
             mods_local: bool_env("MODS_LOCAL", true),
         })
     }

@@ -146,7 +146,10 @@ pub async fn preset(
     }
 
     Ok(PresetResult {
-        mods: mod_dirs.iter().map(|(id, _)| format!("workshop/{id}")).collect(),
+        mods: mod_dirs
+            .iter()
+            .map(|(id, _)| format!("workshop/{id}"))
+            .collect(),
         key_dirs: mod_dirs.into_iter().map(|(_, dir)| dir).collect(),
     })
 }

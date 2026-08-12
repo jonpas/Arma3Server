@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use steamdepot::cdn::DepotManifest;
 
 /// Cache lives alongside the actual downloaded content (`install_dir`,
@@ -79,7 +79,8 @@ pub fn load_keys(install_dir: &Path) -> HashMap<u32, Vec<u8>> {
 pub fn save_keys(install_dir: &Path, keys: &HashMap<u32, Vec<u8>>) -> Result<()> {
     std::fs::create_dir_all(cache_dir(install_dir)).context("failed to create cache dir")?;
     let hex_map: HashMap<u32, String> = keys.iter().map(|(id, k)| (*id, bytes_to_hex(k))).collect();
-    let data = serde_json::to_string_pretty(&hex_map).context("failed to serialize depot key cache")?;
+    let data =
+        serde_json::to_string_pretty(&hex_map).context("failed to serialize depot key cache")?;
     std::fs::write(keys_file(install_dir), data).context("failed to write depot key cache")?;
     Ok(())
 }
@@ -113,7 +114,12 @@ pub fn load_manifest(install_dir: &Path, depot_id: u32, manifest_id: u64) -> Opt
     bincode::deserialize(&data).ok()
 }
 
-pub fn save_manifest(install_dir: &Path, depot_id: u32, manifest_id: u64, manifest: &DepotManifest) -> Result<()> {
+pub fn save_manifest(
+    install_dir: &Path,
+    depot_id: u32,
+    manifest_id: u64,
+    manifest: &DepotManifest,
+) -> Result<()> {
     let path = manifest_path(install_dir, depot_id, manifest_id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("failed to create manifest cache dir")?;
@@ -130,7 +136,10 @@ pub fn save_manifest(install_dir: &Path, depot_id: u32, manifest_id: u64, manife
 /// a server/CDLC depot -- same disambiguation the log `tag` in
 /// `download_one_depot` already uses).
 pub fn sync_key(depot_id: u32, install_dir: &Path) -> String {
-    let leaf = install_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+    let leaf = install_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
     format!("{depot_id}/{leaf}")
 }
 
@@ -143,7 +152,10 @@ const STALE_LOCK_SECS: i64 = 30 * 60;
 const LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn now_unix() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 /// Identifies which process holds a lock, for logging only (not itself part
@@ -173,7 +185,8 @@ impl SyncState {
     pub fn open(root: &Path) -> Result<Arc<Self>> {
         let dir = cache_dir(root);
         std::fs::create_dir_all(&dir).context("failed to create cache dir")?;
-        let conn = Connection::open(dir.join("sync.db")).context("failed to open sync state database")?;
+        let conn =
+            Connection::open(dir.join("sync.db")).context("failed to open sync state database")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("failed to set sync state database to WAL mode")?;
         conn.pragma_update(None, "busy_timeout", 5000u32)
@@ -190,7 +203,9 @@ impl SyncState {
             );",
         )
         .context("failed to initialize sync state schema")?;
-        Ok(Arc::new(Self { conn: Mutex::new(conn) }))
+        Ok(Arc::new(Self {
+            conn: Mutex::new(conn),
+        }))
     }
 
     /// Whether `key` was last verified at exactly `manifest_id`, and the
@@ -210,11 +225,15 @@ impl SyncState {
     /// The manifest_id `key` was last verified at, if any.
     pub fn last_manifest_id(&self, key: &str) -> Option<u64> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT manifest_id FROM synced WHERE key = ?1", [key], |r| r.get::<_, i64>(0))
-            .optional()
-            .ok()
-            .flatten()
-            .map(|v| v as u64)
+        conn.query_row(
+            "SELECT manifest_id FROM synced WHERE key = ?1",
+            [key],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .map(|v| v as u64)
     }
 
     /// The entire `synced` table as an in-memory snapshot, for resolution
@@ -238,7 +257,9 @@ impl SyncState {
                 return HashMap::new();
             }
         };
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)));
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        });
         match rows {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(e) => {
@@ -284,7 +305,8 @@ impl SyncState {
             params![key, holder, now],
         ) {
             Ok(_) => return Ok(true),
-            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => {}
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation => {}
             Err(e) => return Err(e).context("failed to insert lock row"),
         }
 
@@ -296,7 +318,9 @@ impl SyncState {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("failed to begin lock-steal transaction")?;
         let existing: Option<i64> = tx
-            .query_row("SELECT acquired_at FROM locks WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT acquired_at FROM locks WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()
             .context("failed to read existing lock")?;
         let stolen = match existing {
@@ -315,7 +339,8 @@ impl SyncState {
             // The latter case just costs one extra poll cycle.
             _ => false,
         };
-        tx.commit().context("failed to commit lock-steal transaction")?;
+        tx.commit()
+            .context("failed to commit lock-steal transaction")?;
         Ok(stolen)
     }
 
@@ -346,7 +371,10 @@ impl SyncState {
                 if waited {
                     tracing::info!("[{key}] acquired lock (was waiting on another process)");
                 }
-                return Ok(LockGuard { state: self.clone(), key });
+                return Ok(LockGuard {
+                    state: self.clone(),
+                    key,
+                });
             }
             if !waited {
                 tracing::info!("[{key}] waiting for lock held by another server instance...");
