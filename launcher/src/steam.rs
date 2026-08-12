@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use steamdepot::cdn::CdnPool;
 use steamdepot::connection::CmConnection;
@@ -102,7 +102,11 @@ impl CmPool {
     /// only used to cache/reuse a credentialed login's refresh token across
     /// process restarts (see [`negotiate_or_reuse_refresh_token`]) -- has no
     /// effect for anonymous auth.
-    pub async fn start(n: usize, auth: &crate::config::SteamAuth, install_dir: &Path) -> Result<Arc<Self>> {
+    pub async fn start(
+        n: usize,
+        auth: &crate::config::SteamAuth,
+        install_dir: &Path,
+    ) -> Result<Arc<Self>> {
         use crate::config::SteamAuth;
 
         let conns: Vec<(usize, CmConnection)> = match auth {
@@ -126,7 +130,8 @@ impl CmPool {
                 // that token to disk and tries it first on the *next*
                 // process start, so most restarts skip the negotiation
                 // entirely -- same ClientLogon-only cost as anonymous login.
-                let refresh_token = negotiate_or_reuse_refresh_token(user, password, install_dir).await?;
+                let refresh_token =
+                    negotiate_or_reuse_refresh_token(user, password, install_dir).await?;
                 let logins = (0..n).map(|slot| {
                     let refresh_token = refresh_token.clone();
                     async move {
@@ -148,7 +153,12 @@ impl CmPool {
 
     /// Check out a connection, waiting if all `n` are currently in use.
     pub async fn acquire(self: &Arc<Self>) -> PooledConn {
-        let permit = self.sem.clone().acquire_owned().await.expect("semaphore never closed");
+        let permit = self
+            .sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore never closed");
         let (slot, conn) = self
             .idle
             .lock()
@@ -223,7 +233,10 @@ fn is_transient(e: &anyhow::Error) -> bool {
         return true;
     };
     match steam_err {
-        SteamError::WebSocket(_) | SteamError::Io(_) | SteamError::ConnectionClosed | SteamError::ServiceMethodTimeout(_) => true,
+        SteamError::WebSocket(_)
+        | SteamError::Io(_)
+        | SteamError::ConnectionClosed
+        | SteamError::ServiceMethodTimeout(_) => true,
         SteamError::EResult { eresult, .. } => matches!(
             eresult,
             3   // NoConnection
@@ -253,7 +266,11 @@ const DEFAULT_RETRY_ATTEMPTS: usize = 3;
 /// each retry -- a plain `FnMut() -> Fut` closure can't express "the
 /// returned future's borrow doesn't outlive this one call" without extra
 /// lifetime machinery, which async closures handle natively.
-async fn with_retry<T>(label: impl std::fmt::Display, attempts: usize, mut f: impl AsyncFnMut() -> Result<T>) -> Result<T> {
+async fn with_retry<T>(
+    label: impl std::fmt::Display,
+    attempts: usize,
+    mut f: impl AsyncFnMut() -> Result<T>,
+) -> Result<T> {
     for attempt in 1..=attempts {
         match f().await {
             Ok(v) => return Ok(v),
@@ -276,11 +293,17 @@ async fn with_retry<T>(label: impl std::fmt::Display, attempts: usize, mut f: im
 /// (re-)persisted, so a successful cached-token reuse doesn't need to hit
 /// the disk cache write path at all, and a fallback negotiation updates the
 /// cache for the *next* restart.
-async fn negotiate_or_reuse_refresh_token(username: &str, password: &str, install_dir: &Path) -> Result<String> {
+async fn negotiate_or_reuse_refresh_token(
+    username: &str,
+    password: &str,
+    install_dir: &Path,
+) -> Result<String> {
     if let Some(cached) = cache::load_refresh_token(install_dir) {
-        let result = with_retry("cached Steam refresh token probe", DEFAULT_RETRY_ATTEMPTS, async || {
-            login_with_refresh_token(username, &cached).await
-        })
+        let result = with_retry(
+            "cached Steam refresh token probe",
+            DEFAULT_RETRY_ATTEMPTS,
+            async || login_with_refresh_token(username, &cached).await,
+        )
         .await;
         match result {
             Ok(mut conn) => {
@@ -340,7 +363,9 @@ async fn negotiate_refresh_token(username: &str, password: &str) -> Result<Strin
 /// already-negotiated refresh token -- one `ClientLogon`, no RSA/auth-
 /// session/poll round-trips.
 async fn login_with_refresh_token(username: &str, refresh_token: &str) -> Result<CmConnection> {
-    let mut conn = connect_ws().await.context("failed to open a fresh CM connection")?;
+    let mut conn = connect_ws()
+        .await
+        .context("failed to open a fresh CM connection")?;
 
     login::login_with_token(&mut conn, username, refresh_token)
         .await
@@ -355,7 +380,9 @@ async fn login_with_refresh_token(username: &str, refresh_token: &str) -> Result
 /// Steam won't grant free CDLC licenses or workshop item access to
 /// anonymous sessions -- see [`crate::config::SteamAuth`].
 pub async fn login_anonymous() -> Result<CmConnection> {
-    let mut conn = connect_ws().await.context("failed to open a fresh CM connection")?;
+    let mut conn = connect_ws()
+        .await
+        .context("failed to open a fresh CM connection")?;
     login::login_anonymous(&mut conn)
         .await
         .context("anonymous login failed")?;
@@ -365,7 +392,9 @@ pub async fn login_anonymous() -> Result<CmConnection> {
 
 async fn connect_ws() -> Result<CmConnection> {
     let http = reqwest::Client::new();
-    let cm_list = cm_list::get_cm_list(&http).await.context("failed to fetch CM server list")?;
+    let cm_list = cm_list::get_cm_list(&http)
+        .await
+        .context("failed to fetch CM server list")?;
 
     let ws_server = cm_list
         .serverlist
@@ -396,26 +425,32 @@ async fn resolve_wanted_depots(
     // so that's several seconds spent on depots we're about to throw away.
     // Filtering before fetching keys instead cuts straight to the ones we
     // need.
-    let info = with_retry(format!("get_product_info(app {ARMA3_SERVER_APP_ID})"), DEFAULT_RETRY_ATTEMPTS, async || {
-        with_timeout(
-            format!("get_product_info(app {ARMA3_SERVER_APP_ID})"),
-            pics::get_product_info(conn, &[ARMA3_SERVER_APP_ID], &[]),
-        )
-        .await
-    })
+    let info = with_retry(
+        format!("get_product_info(app {ARMA3_SERVER_APP_ID})"),
+        DEFAULT_RETRY_ATTEMPTS,
+        async || {
+            with_timeout(
+                format!("get_product_info(app {ARMA3_SERVER_APP_ID})"),
+                pics::get_product_info(conn, &[ARMA3_SERVER_APP_ID], &[]),
+            )
+            .await
+        },
+    )
     .await
     .context("failed to fetch product info")?;
-    let app_info = info
-        .apps
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("app {ARMA3_SERVER_APP_ID} not found in product info"))?;
+    let app_info =
+        info.apps.into_iter().next().ok_or_else(|| {
+            anyhow::anyhow!("app {ARMA3_SERVER_APP_ID} not found in product info")
+        })?;
 
     let all_depots = depot::resolve_depots(&app_info, TARGET_OS, TARGET_BRANCH)
         .context("failed to resolve depot list")?;
     debug!(
         "all depots on branch {TARGET_BRANCH} for os {TARGET_OS}: {:?}",
-        all_depots.iter().map(|d| (d.depot_id, d.depot_from_app)).collect::<Vec<_>>()
+        all_depots
+            .iter()
+            .map(|d| (d.depot_id, d.depot_from_app))
+            .collect::<Vec<_>>()
     );
 
     // 233781 = Default Content, 233783 = Linux Server, 233785 = Profiling
@@ -475,7 +510,11 @@ async fn resolve_wanted_depots(
     let is_authenticated = conn.session().map(|s| s.authenticated).unwrap_or(false);
     if is_authenticated {
         let result = with_retry("request_free_license", DEFAULT_RETRY_ATTEMPTS, async || {
-            with_timeout("request_free_license", pics::request_free_license(conn, &license_apps)).await
+            with_timeout(
+                "request_free_license",
+                pics::request_free_license(conn, &license_apps),
+            )
+            .await
         })
         .await;
         match result {
@@ -524,7 +563,10 @@ async fn resolve_wanted_depots(
                     // have access to for some transient reason) failing to
                     // resolve shouldn't block every other depot, let alone
                     // fail server startup outright.
-                    warn!("depot {} failed to get depot key, skipping: {e:#}", depot.depot_id);
+                    warn!(
+                        "depot {} failed to get depot key, skipping: {e:#}",
+                        depot.depot_id
+                    );
                     continue;
                 }
             };
@@ -569,7 +611,14 @@ pub async fn resolve_and_spawn_server(
     tasks: &Mutex<SyncTasks>,
     sync_state: Arc<cache::SyncState>,
 ) -> Result<()> {
-    let plan = resolve_wanted_depots(conn, install_dir, include_profiling, cdlc_depot_ids, &sync_state).await?;
+    let plan = resolve_wanted_depots(
+        conn,
+        install_dir,
+        include_profiling,
+        cdlc_depot_ids,
+        &sync_state,
+    )
+    .await?;
 
     // An empty plan here means everything wanted was already fully synced
     // (see resolve_wanted_depots' cache filter) -- resolve_wanted_depots
@@ -579,7 +628,16 @@ pub async fn resolve_and_spawn_server(
         return Ok(());
     }
 
-    spawn_plan_downloads(conn, plan, TARGET_BRANCH, install_dir, sem, tasks, sync_state).await
+    spawn_plan_downloads(
+        conn,
+        plan,
+        TARGET_BRANCH,
+        install_dir,
+        sem,
+        tasks,
+        sync_state,
+    )
+    .await
 }
 
 /// Fetch manifests for an already-resolved plan, then spawn each depot's
@@ -627,7 +685,10 @@ async fn spawn_plan_downloads(
     for dp in plan.plans {
         match cache::load_manifest(install_dir, dp.depot.depot_id, dp.depot.manifest_id) {
             Some(manifest) => {
-                debug!("depot {} manifest: cache hit (manifest_id {})", dp.depot.depot_id, dp.depot.manifest_id);
+                debug!(
+                    "depot {} manifest: cache hit (manifest_id {})",
+                    dp.depot.depot_id, dp.depot.manifest_id
+                );
                 let mut dp = dp;
                 dp.manifest = Some(manifest);
                 cache_hits.push(dp);
@@ -662,7 +723,10 @@ async fn spawn_plan_downloads(
             // one depot failing here (transient Steam-side issue, access
             // hiccup right after a content update, ...) shouldn't cost the
             // rest of the batch or crash server startup.
-            Err(e) => warn!("depot {} failed to get manifest request code, skipping: {e:#}", dp.depot.depot_id),
+            Err(e) => warn!(
+                "depot {} failed to get manifest request code, skipping: {e:#}",
+                dp.depot.depot_id
+            ),
         }
     }
 
@@ -682,9 +746,22 @@ async fn spawn_plan_downloads(
                 None,
             )
             .await
-            .with_context(|| format!("failed to download manifest for depot {}", dp.depot.depot_id))?;
-            if let Err(e) = cache::save_manifest(&install_dir, dp.depot.depot_id, dp.depot.manifest_id, &manifest) {
-                warn!("failed to cache manifest for depot {}: {e}", dp.depot.depot_id);
+            .with_context(|| {
+                format!(
+                    "failed to download manifest for depot {}",
+                    dp.depot.depot_id
+                )
+            })?;
+            if let Err(e) = cache::save_manifest(
+                &install_dir,
+                dp.depot.depot_id,
+                dp.depot.manifest_id,
+                &manifest,
+            ) {
+                warn!(
+                    "failed to cache manifest for depot {}: {e}",
+                    dp.depot.depot_id
+                );
             }
             dp.manifest_request_code = Some(code);
             dp.manifest = Some(manifest);
@@ -703,7 +780,13 @@ async fn spawn_plan_downloads(
     let pool = Arc::new(Mutex::new(CdnPool::new(cdn_servers)));
 
     for dp in resolved_plans {
-        let fut = download_one_depot(dp, install_dir.to_path_buf(), http.clone(), pool.clone(), sync_state.clone());
+        let fut = download_one_depot(
+            dp,
+            install_dir.to_path_buf(),
+            http.clone(),
+            pool.clone(),
+            sync_state.clone(),
+        );
         spawn_bounded(tasks, sem.clone(), fut);
     }
 
@@ -763,7 +846,10 @@ pub async fn resolve_workshop_items(
     )
     .await
     .context("failed to resolve workshop items")?;
-    info!("Resolved {} workshop item(s), fetching manifest request codes...", items.len());
+    info!(
+        "Resolved {} workshop item(s), fetching manifest request codes...",
+        items.len()
+    );
 
     // Every Arma 3 workshop item shares depot_id == consumer_appid (the
     // whole workshop is one "depot" for the app), so without dedup this
@@ -797,7 +883,8 @@ pub async fn resolve_workshop_items(
         }
 
         let load_start = std::time::Instant::now();
-        let cached_manifest = cache::load_manifest(install_dir, item.consumer_appid, item.manifest_id);
+        let cached_manifest =
+            cache::load_manifest(install_dir, item.consumer_appid, item.manifest_id);
         load_manifest_total += load_start.elapsed();
         if let Some(manifest) = cached_manifest {
             debug!(
@@ -808,12 +895,22 @@ pub async fn resolve_workshop_items(
                 cached.clone()
             } else {
                 let fetched = with_retry(
-                    format!("get_depot_decryption_key(workshop item {})", item.published_file_id),
+                    format!(
+                        "get_depot_decryption_key(workshop item {})",
+                        item.published_file_id
+                    ),
                     DEFAULT_RETRY_ATTEMPTS,
                     async || {
                         with_timeout(
-                            format!("get_depot_decryption_key(workshop item {})", item.published_file_id),
-                            pics::get_depot_decryption_key(conn, item.consumer_appid, item.consumer_appid),
+                            format!(
+                                "get_depot_decryption_key(workshop item {})",
+                                item.published_file_id
+                            ),
+                            pics::get_depot_decryption_key(
+                                conn,
+                                item.consumer_appid,
+                                item.consumer_appid,
+                            ),
                         )
                         .await
                     },
@@ -828,7 +925,10 @@ pub async fn resolve_workshop_items(
                         // the whole launcher over it (see the
                         // manifest-request-code failure below for why this
                         // whole loop tolerates per-item failures now).
-                        warn!("[{}] failed to get depot key, skipping: {e:#}", item.published_file_id);
+                        warn!(
+                            "[{}] failed to get depot key, skipping: {e:#}",
+                            item.published_file_id
+                        );
                         continue;
                     }
                 };
@@ -865,12 +965,22 @@ pub async fn resolve_workshop_items(
             cached.clone()
         } else {
             let fetched = with_retry(
-                format!("get_depot_decryption_key(workshop item {})", item.published_file_id),
+                format!(
+                    "get_depot_decryption_key(workshop item {})",
+                    item.published_file_id
+                ),
                 DEFAULT_RETRY_ATTEMPTS,
                 async || {
                     with_timeout(
-                        format!("get_depot_decryption_key(workshop item {})", item.published_file_id),
-                        pics::get_depot_decryption_key(conn, item.consumer_appid, item.consumer_appid),
+                        format!(
+                            "get_depot_decryption_key(workshop item {})",
+                            item.published_file_id
+                        ),
+                        pics::get_depot_decryption_key(
+                            conn,
+                            item.consumer_appid,
+                            item.consumer_appid,
+                        ),
                     )
                     .await
                 },
@@ -879,7 +989,10 @@ pub async fn resolve_workshop_items(
             let key = match fetched {
                 Ok(key) => key,
                 Err(e) => {
-                    warn!("[{}] failed to get depot key, skipping: {e:#}", item.published_file_id);
+                    warn!(
+                        "[{}] failed to get depot key, skipping: {e:#}",
+                        item.published_file_id
+                    );
                     continue;
                 }
             };
@@ -901,11 +1014,17 @@ pub async fn resolve_workshop_items(
         // it keeps getting retried for free on every restart until it
         // succeeds.
         let request_code = match with_retry(
-            format!("get_manifest_request_code(workshop item {})", item.published_file_id),
+            format!(
+                "get_manifest_request_code(workshop item {})",
+                item.published_file_id
+            ),
             DEFAULT_RETRY_ATTEMPTS,
             async || {
                 with_timeout(
-                    format!("get_manifest_request_code(workshop item {})", item.published_file_id),
+                    format!(
+                        "get_manifest_request_code(workshop item {})",
+                        item.published_file_id
+                    ),
                     steamdepot::cdn::get_manifest_request_code(
                         conn,
                         item.consumer_appid,
@@ -943,7 +1062,11 @@ pub async fn resolve_workshop_items(
     // Phase 2 (parallel -- plain CDN HTTP, no CmConnection involved): fetch
     // each item's manifest bytes concurrently, for whatever wasn't already
     // a cache hit above.
-    info!("Fetching {} manifest(s) from CDN ({} already cached)...", pending.len(), cache_hits.len());
+    info!(
+        "Fetching {} manifest(s) from CDN ({} already cached)...",
+        pending.len(),
+        cache_hits.len()
+    );
     let cdn_servers = with_retry("get_cdn_servers", DEFAULT_RETRY_ATTEMPTS, async || {
         with_timeout(
             "get_cdn_servers",
@@ -975,10 +1098,23 @@ pub async fn resolve_workshop_items(
                 None,
             )
             .await
-            .with_context(|| format!("failed to fetch manifest for workshop item {}", item.published_file_id))?;
+            .with_context(|| {
+                format!(
+                    "failed to fetch manifest for workshop item {}",
+                    item.published_file_id
+                )
+            })?;
             info!("[{}] manifest ready", item.published_file_id);
-            if let Err(e) = cache::save_manifest(&install_dir, item.consumer_appid, item.manifest_id, &manifest) {
-                warn!("failed to cache manifest for workshop item {}: {e}", item.published_file_id);
+            if let Err(e) = cache::save_manifest(
+                &install_dir,
+                item.consumer_appid,
+                item.manifest_id,
+                &manifest,
+            ) {
+                warn!(
+                    "failed to cache manifest for workshop item {}: {e}",
+                    item.published_file_id
+                );
             }
 
             Ok::<_, anyhow::Error>(ResolvedWorkshopItem {
@@ -1021,13 +1157,19 @@ pub(crate) async fn download_one_depot(
     pool: Arc<Mutex<CdnPool>>,
     sync_state: Arc<cache::SyncState>,
 ) -> Result<()> {
-    let manifest = dp
-        .manifest
-        .as_mut()
-        .with_context(|| format!("depot {} has no manifest after fetch_manifests", dp.depot.depot_id))?;
+    let manifest = dp.manifest.as_mut().with_context(|| {
+        format!(
+            "depot {} has no manifest after fetch_manifests",
+            dp.depot.depot_id
+        )
+    })?;
 
-    decrypt_manifest_filenames(manifest, &dp.key)
-        .with_context(|| format!("failed to decrypt filenames for depot {}", dp.depot.depot_id))?;
+    decrypt_manifest_filenames(manifest, &dp.key).with_context(|| {
+        format!(
+            "failed to decrypt filenames for depot {}",
+            dp.depot.depot_id
+        )
+    })?;
 
     let depot_id = dp.depot.depot_id;
     // depot_id alone doesn't uniquely identify a download: every workshop
@@ -1056,7 +1198,9 @@ pub(crate) async fn download_one_depot(
     // syncing this exact manifest_id while we were waiting, trust its work
     // instead of redundantly re-verifying everything ourselves.
     if sync_state.is_synced(&sync_key, manifest_id, install_dir.is_dir()) {
-        info!("[{tag}] another server instance already synced this manifest_id ({manifest_id}) while we waited, trusting it");
+        info!(
+            "[{tag}] another server instance already synced this manifest_id ({manifest_id}) while we waited, trusting it"
+        );
         return Ok(());
     }
 
@@ -1068,7 +1212,9 @@ pub(crate) async fn download_one_depot(
         Some(old) => info!(
             "[{tag}] manifest_id changed since last verified sync ({old} -> {manifest_id}), content was updated -- verifying"
         ),
-        None => info!("[{tag}] no previous synced-manifest marker (manifest_id {manifest_id}), verifying"),
+        None => info!(
+            "[{tag}] no previous synced-manifest marker (manifest_id {manifest_id}), verifying"
+        ),
     }
 
     info!(
@@ -1100,7 +1246,10 @@ pub(crate) async fn download_one_depot(
             };
             let prev = last_pct.load(Ordering::Relaxed);
             if prev == u32::MAX || pct > prev {
-                if last_pct.compare_exchange(prev, pct, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                if last_pct
+                    .compare_exchange(prev, pct, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
                     info!(
                         "[{tag_progress}] {}%  chunks {}/{} (verified {})  bytes {}",
                         pct, p.chunks_done, p.chunks_total, p.chunks_verified, p.bytes_downloaded
