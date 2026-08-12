@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::Command;
 
@@ -11,6 +11,44 @@ use crate::local_mods;
 
 const SERVER_ROOT: &str = "/arma3/server";
 const TMP_CONFIG: &str = "/tmp/arma3.cfg";
+
+/// `sh -c <cmd>` with SIGPIPE and SIGXFSZ restored to SIG_IGN in the child,
+/// matching the signal dispositions v2's server actually ran under.
+///
+/// v2 launched the server with `os.system()`, which fork/execs without
+/// touching signal dispositions, so arma3server_x64 inherited CPython's
+/// own SIG_IGN for SIGPIPE and a write to a closed pipe merely returned
+/// EPIPE. Rust's `Command` deliberately resets SIGPIPE to SIG_DFL in the
+/// child (libstd ignores it process-wide, and it resets so the spawned
+/// program starts from a standard state), so the exact same server binary
+/// gets *killed* by SIGPIPE instead -- exiting 141 (128+13) and taking the
+/// whole server down. Reported against v3 by an extension that loads a JVM,
+/// which is the kind of thing that closes a pipe under a foreign thread;
+/// the extension is not doing anything wrong, v2 just silently tolerated
+/// this and v3 did not.
+///
+/// SIGXFSZ is the other signal CPython ignores process-wide (confirmed by
+/// decoding a v2 child's `SigIgn` mask: bits 13 and 25, nothing else). It
+/// only fires when RLIMIT_FSIZE is set, which it is not by default -- but
+/// where it does fire, v2 turned an oversized write (a large .rpt, say)
+/// into an EFBIG the server could handle, and a SIG_DFL v3 would instead
+/// kill it. Restored here too so the set matches v2 exactly rather than
+/// leaving one arbitrary difference behind.
+fn sh_command(cmd: &str) -> Command {
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(cmd);
+    // SAFETY: runs in the child between fork and exec, where only
+    // async-signal-safe calls are permitted. `signal(2)` is on POSIX's
+    // async-signal-safe list, and nothing here allocates or takes a lock.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    command
+}
 
 fn mod_param(name: &str, mods: &[String]) -> String {
     if mods.is_empty() {
@@ -139,9 +177,13 @@ pub async fn run(
             tracing::info!("Saved HC command to: {hc_script_path}");
 
             tracing::info!("LAUNCHING ARMA CLIENT {i} WITH {hc_launch}");
-            Command::new("sh")
-                .arg("-c")
-                .arg(&hc_launch)
+            // Same SIGPIPE treatment as the server below: HCs run the same
+            // binary with the same mods loaded, so an extension that kills
+            // the server this way kills an HC too. (v2 spawned HCs via
+            // subprocess.Popen, whose restore_signals=True default *did*
+            // reset SIGPIPE to SIG_DFL -- so this is deliberately not
+            // bug-for-bug with v2, which was inconsistent between the two.)
+            sh_command(&hc_launch)
                 .spawn()
                 .with_context(|| format!("failed to spawn headless client {i}"))?;
         }
@@ -189,9 +231,7 @@ pub async fn run(
     }
 
     tracing::info!("LAUNCHING ARMA SERVER WITH {launch}");
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&launch)
+    let status = sh_command(&launch)
         .status()
         .context("failed to exec arma3server")?;
 
@@ -222,4 +262,23 @@ fn glob_hc_scripts() -> Result<Vec<std::path::PathBuf>> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sh_command_child_matches_v2_sigign_mask() {
+        let out = super::sh_command("grep '^SigIgn' /proc/self/status")
+            .output()
+            .unwrap();
+        let mask = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        let bits = u64::from_str_radix(&mask, 16).unwrap();
+        // 13 = SIGPIPE, 25 = SIGXFSZ -- exactly what CPython ignored in v2.
+        assert_eq!(bits & (1 << 12), 1 << 12, "SIGPIPE not ignored (mask {mask})");
+        assert_eq!(bits & (1 << 24), 1 << 24, "SIGXFSZ not ignored (mask {mask})");
+    }
 }
