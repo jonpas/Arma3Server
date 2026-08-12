@@ -1,0 +1,18 @@
+version: '3.8'
+name: skua_arma3_template # change me
+services:
+  arma3:
+    build: .
+    image: arma3server:local
+    platform: linux/amd64
+    network_mode: host
+    volumes:
+      - './configs:/arma3/server/configs' # Server.cfg and friends
+      - './mods:/arma3/server/mods' # Non-workshop general mods (the whole mod folder)
+      - './servermods:/arma3/server/servermods' # Serverside mods (the whole mod folder)
+      - './missions:/arma3/server/mpmissions' # Mission files (.pbo or directory)
+      - './mod_presets:/arma3/presets' # HTML mod presets
+      - '/var/opt/arma3/workshop:/arma3/server/workshop' # keep as-is, these are shared across multiple servers, workshop mod bucket
+      - '/var/opt/arma3/server:/arma3/server/' # keep as-is, server files
+    env_file: .env
+    restart: unless-stopped
