@@ -803,6 +803,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "futures",
+ "libc",
  "once_cell",
  "regex",
  "reqwest",
